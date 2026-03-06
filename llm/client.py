@@ -6,8 +6,16 @@ import requests
 
 from config import OLLAMA_URL, OLLAMA_MODEL
 
-_GENERATE_URL   = f"{OLLAMA_URL}/api/generate"
-_SENTENCE_END   = re.compile(r'(?<=[.!?])\s')  # split after . ! ? followed by space
+_GENERATE_URL = f"{OLLAMA_URL}/api/generate"
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s')  # split after . ! ? followed by space
+
+_BASE_SYSTEM = (
+    "You are FRIDAY, an AI desk assistant with a robotic arm. "
+    "Rules: reply in 1-2 short sentences only — never paragraphs, lists, or bullet points. "
+    "Be direct and natural, as if speaking aloud. "
+    "For complex topics, give a one-sentence answer then ask: 'Want me to go deeper?' "
+    "Never elaborate unless the user explicitly asks for more."
+)
 
 
 def warmup() -> None:
@@ -37,16 +45,33 @@ def warmup() -> None:
         print(f"[Friday] WARNING: Ollama warmup failed — {exc}")
 
 
-def ask(prompt: str, on_sentence: Optional[Callable[[str], None]] = None) -> None:
+def ask(
+    prompt: str,
+    on_sentence: Optional[Callable[[str], None]] = None,
+    world_context: Optional[str] = None,
+) -> None:
     """
     Stream a response from the Ollama model, printing tokens as they arrive.
+
     When a sentence boundary is detected, on_sentence(sentence) is called
-    so the caller can speak each sentence immediately (TTS).
+    immediately — allowing the TTS to speak each sentence as it forms.
+
+    world_context: optional summary of visible desk objects injected into
+    the system prompt so Friday can reference what it currently sees.
     """
+    system = _BASE_SYSTEM
+    if world_context:
+        system += f"\n\nCurrent desk view: {world_context}"
+
     try:
         with requests.post(
             _GENERATE_URL,
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": True},
+            json={
+                "model":  OLLAMA_MODEL,
+                "system": system,
+                "prompt": prompt,
+                "stream": True,
+            },
             stream=True,
             timeout=60,
         ) as resp:
@@ -63,19 +88,17 @@ def ask(prompt: str, on_sentence: Optional[Callable[[str], None]] = None) -> Non
 
                 if on_sentence:
                     buffer += token
-                    # Flush complete sentences to TTS as they form
                     parts = _SENTENCE_END.split(buffer)
-                    for sentence in parts[:-1]:      # all but the trailing fragment
+                    for sentence in parts[:-1]:
                         if sentence.strip():
                             try:
                                 on_sentence(sentence.strip())
                             except Exception as tts_exc:
                                 print(f"\n[Friday] WARNING: TTS error — {tts_exc}")
-                    buffer = parts[-1]               # keep the incomplete fragment
+                    buffer = parts[-1]
 
                 if data.get("done"):
-                    print()  # newline after streamed output
-                    # Speak any remaining text after the last sentence boundary
+                    print()
                     if on_sentence and buffer.strip():
                         try:
                             on_sentence(buffer.strip())
